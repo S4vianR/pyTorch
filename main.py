@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import numpy as np
+import os
 
 # Detectar si hay GPU disponible
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -44,8 +45,8 @@ def tensor_a_texto(tensor):
 max_length = max(max(len(s) for s in saludos), max(len(s) for s in respuestas))
 
 # Crear tensores de entrada y salida
-entradas = [texto_a_tensor(saludo, max_length) for saludo in saludos]
-salidas = [texto_a_tensor(respuesta, max_length) for respuesta in respuestas]
+entradas = [texto_a_tensor(saludo, max_length).view(-1, 1) for saludo in saludos]
+salidas = [texto_a_tensor(respuesta, max_length).view(-1, 1) for respuesta in respuestas]
 
 # Definir el modelo
 class SaludoAI(nn.Module):
@@ -69,37 +70,56 @@ class SaludoAI(nn.Module):
 hidden_size = 256  
 output_size = 256  
 
-# Crear el modelo y moverlo a la GPU
-modelo = SaludoAI(1, hidden_size, output_size).to(device)
+# Ruta para guardar el modelo
+modelo_path = './training_data/modelo_saludo.pth'
+
+# Cargar el modelo si ya existe
+if os.path.exists(modelo_path):
+    modelo = torch.load(modelo_path)
+    print("Modelo cargado desde el archivo.")
+else:
+    # Crear el modelo y moverlo a la GPU
+    modelo = SaludoAI(1, hidden_size, output_size).to(device)
 
 # Definir la función de pérdida y el optimizador
 criterio = nn.CrossEntropyLoss()
 optimizador = torch.optim.Adam(modelo.parameters(), lr=0.001)
 
-# Entrenar el modelo
-n_epocas = 2000  
-print("Entrenando el modelo...")
-for epoca in range(n_epocas):
-    loss_total = 0
-    for entrada, salida in zip(entradas, salidas):
-        hidden = modelo.init_hidden()
-        modelo.zero_grad()
-        loss = 0
-        
-        # Mover tensores a la GPU
-        entrada = entrada.to(device)
-        salida = salida.to(device)
+# Entrenar el modelo solo si hay nuevos datos
+if len(entradas) > 0 and len(salidas) > 0:
+    n_epocas = 2000
+    print("Entrenando el modelo...")
+    for epoca in range(n_epocas):
+        loss_total = 0
+        for entrada, salida in zip(entradas, salidas):
+            hidden = modelo.init_hidden()
+            modelo.zero_grad()
+            loss = 0  # Reset loss for the batch
+            
+            # Aumentar el tamaño del lote
+            entrada = entrada.repeat(2, 1)  # Ejemplo de duplicar el tamaño del lote
+            salida = salida.repeat(2, 1)
+            
+            # Mover tensores a la GPU
+            entrada = entrada.to(device)
+            salida = salida.to(device)
+            
+            for i in range(len(entrada)):
+                try:
+                    output, hidden = modelo(entrada[i].view(1, -1).to(device), hidden)
+                    loss += criterio(output.view(1, -1), salida[i].view(1))
+                except KeyboardInterrupt:
+                    print('\nEntrenamiento interrumpido. Guardando progreso...')
+                    break
+            loss.backward()  # Backward pass after accumulating loss
+            optimizador.step()  # Update optimizer
+            loss_total += loss.item()  
+        if (epoca + 1) % 200 == 0:  
+            print(f'Época {epoca+1}/{n_epocas}, Loss: {loss_total/len(entradas):.4f}')
 
-        for i in range(len(entrada)):
-            output, hidden = modelo(entrada[i].view(1).to(device), hidden)
-            loss += criterio(output.view(1, -1), salida[i].view(1))
-
-        loss.backward()
-        optimizador.step()
-        loss_total += loss.item()
-    
-    if (epoca + 1) % 200 == 0:  
-        print(f'Época {epoca+1}/{n_epocas}, Loss: {loss_total/len(entradas):.4f}')
+    # Guardar el modelo después del entrenamiento
+    torch.save(modelo, modelo_path)
+    print("Modelo guardado.")
 
 # Función para predecir la respuesta
 def predecir(saludo):
@@ -145,4 +165,7 @@ def chat():
             print("Bot: Por favor, escribe algo o usa '/help' para ver los comandos disponibles.\n")
 
 if __name__ == "__main__":
-    chat()
+    try:
+        chat()
+    except KeyboardInterrupt:
+        print('\n¡Hasta luego! Gracias por chatear.')
